@@ -1,0 +1,530 @@
+"""MNC Master Converter v3.0.0 - PyQt6 GUI"""
+
+import logging
+import sys
+from pathlib import Path
+from typing import List, Optional, Union
+
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QRadioButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .config import (
+    APP_NAME, APP_VERSION, DEFAULT_OUTPUT_BASE,
+    WEEKDAY_KR, WEIGHTING_TYPES, DEFAULT_WEIGHTING
+)
+from .parsers import FusionParser, RionParser, FusionSession, RionSession
+from .exporters import export_to_parquet, export_to_csv
+from .utils.file_utils import generate_output_filename
+
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# 타입 별칭
+SessionType = Union[FusionSession, RionSession]
+
+
+class ConversionThread(QThread):
+    """변환 스레드"""
+
+    progress = pyqtSignal(int, int, str)
+    session_complete = pyqtSignal(int, bool, str)
+    finished_all = pyqtSignal(int, int)
+
+    def __init__(
+        self,
+        sessions: List[SessionType],
+        output_base: Path,
+        location: str,
+        order: str,
+        weighting: str,
+        export_csv: bool,
+        device_type: str
+    ):
+        super().__init__()
+        self.sessions = sessions
+        self.output_base = output_base
+        self.location = location
+        self.order = order if order else None
+        self.weighting = weighting
+        self.export_csv = export_csv
+        self.device_type = device_type
+        self._is_cancelled = False
+
+    def run(self):
+        """변환 실행"""
+        success_count = 0
+        fail_count = 0
+        total = len(self.sessions)
+
+        # 파서 선택
+        if self.device_type == 'fusion':
+            parser = FusionParser()
+        else:
+            parser = RionParser()
+
+        for idx, session in enumerate(self.sessions):
+            if self._is_cancelled:
+                break
+
+            self.progress.emit(idx + 1, total, f"변환 중: {session.point}")
+
+            try:
+                # 파싱
+                df = parser.parse(
+                    session.source_path,
+                    session.measurement_date,
+                    self.weighting
+                )
+
+                # 파일명 생성
+                filename = generate_output_filename(
+                    self.location,
+                    self.order,
+                    session.point,
+                    session.measurement_date,
+                    self.weighting
+                )
+
+                # Parquet 저장
+                parquet_path = self.output_base / filename
+                success = export_to_parquet(df, parquet_path)
+
+                # CSV 저장 (옵션)
+                if success and self.export_csv:
+                    csv_filename = filename.replace('.parquet', '.csv')
+                    csv_path = self.output_base / csv_filename
+                    export_to_csv(df, csv_path)
+
+                if success:
+                    self.session_complete.emit(idx, True, filename)
+                    success_count += 1
+                else:
+                    self.session_complete.emit(idx, False, "저장 실패")
+                    fail_count += 1
+
+            except Exception as e:
+                logger.exception(f"변환 실패: {session.point}")
+                self.session_complete.emit(idx, False, str(e))
+                fail_count += 1
+
+        self.finished_all.emit(success_count, fail_count)
+
+    def cancel(self):
+        """취소"""
+        self._is_cancelled = True
+
+
+class MainWindow(QMainWindow):
+    """메인 윈도우"""
+
+    def __init__(self):
+        super().__init__()
+        self.sessions: List[SessionType] = []
+        self.conversion_thread: Optional[ConversionThread] = None
+
+        self._init_ui()
+
+    def _init_ui(self):
+        """UI 초기화"""
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
+        self.setMinimumSize(1000, 750)
+
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        layout = QVBoxLayout(central_widget)
+
+        # 장비 선택
+        device_group = QGroupBox("장비 유형")
+        device_layout = QHBoxLayout(device_group)
+
+        self.fusion_radio = QRadioButton("Fusion (N2xx ~ N5xx)")
+        self.fusion_radio.setChecked(True)
+        device_layout.addWidget(self.fusion_radio)
+
+        self.rion_radio = QRadioButton("Rion (NX-42RT)")
+        device_layout.addWidget(self.rion_radio)
+
+        device_layout.addStretch()
+        layout.addWidget(device_group)
+
+        # 입력 설정
+        input_group = QGroupBox("입력 설정")
+        input_layout = QVBoxLayout(input_group)
+
+        # 소스 경로
+        source_layout = QHBoxLayout()
+        source_layout.addWidget(QLabel("소스 경로:"))
+        self.source_edit = QLineEdit()
+        self.source_edit.setPlaceholderText("측정 데이터 루트 폴더...")
+        source_layout.addWidget(self.source_edit)
+        self.source_btn = QPushButton("찾아보기...")
+        self.source_btn.clicked.connect(self._browse_source)
+        source_layout.addWidget(self.source_btn)
+        input_layout.addLayout(source_layout)
+
+        # 위치명, 차수
+        info_layout = QHBoxLayout()
+        info_layout.addWidget(QLabel("위치명:"))
+        self.location_edit = QLineEdit()
+        self.location_edit.setPlaceholderText("예: 광주비행장")
+        info_layout.addWidget(self.location_edit)
+
+        info_layout.addWidget(QLabel("차수:"))
+        self.order_edit = QLineEdit()
+        self.order_edit.setPlaceholderText("예: 1차 (선택)")
+        self.order_edit.setMaximumWidth(100)
+        info_layout.addWidget(self.order_edit)
+
+        info_layout.addWidget(QLabel("가중치:"))
+        self.weighting_combo = QComboBox()
+        self.weighting_combo.addItems(WEIGHTING_TYPES)
+        self.weighting_combo.setCurrentText(DEFAULT_WEIGHTING)
+        info_layout.addWidget(self.weighting_combo)
+
+        info_layout.addStretch()
+        input_layout.addLayout(info_layout)
+
+        # 스캔 버튼
+        scan_layout = QHBoxLayout()
+        self.scan_btn = QPushButton("스캔")
+        self.scan_btn.clicked.connect(self._scan_sessions)
+        scan_layout.addWidget(self.scan_btn)
+        scan_layout.addStretch()
+        input_layout.addLayout(scan_layout)
+
+        layout.addWidget(input_group)
+
+        # 세션 테이블
+        table_group = QGroupBox("감지된 세션")
+        table_layout = QVBoxLayout(table_group)
+
+        # 필터
+        filter_layout = QHBoxLayout()
+        self.exclude_weekend_cb = QCheckBox("주말 제외")
+        self.exclude_weekend_cb.stateChanged.connect(self._apply_filters)
+        filter_layout.addWidget(self.exclude_weekend_cb)
+
+        filter_layout.addStretch()
+
+        self.select_all_btn = QPushButton("전체 선택")
+        self.select_all_btn.clicked.connect(self._select_all)
+        filter_layout.addWidget(self.select_all_btn)
+
+        self.deselect_all_btn = QPushButton("전체 해제")
+        self.deselect_all_btn.clicked.connect(self._deselect_all)
+        filter_layout.addWidget(self.deselect_all_btn)
+
+        table_layout.addLayout(filter_layout)
+
+        # 테이블
+        self.session_table = QTableWidget()
+        self.session_table.setColumnCount(5)
+        self.session_table.setHorizontalHeaderLabels([
+            "선택", "지점", "측정일", "요일", "장비"
+        ])
+        self.session_table.setSortingEnabled(True)
+        self.session_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        table_layout.addWidget(self.session_table)
+
+        layout.addWidget(table_group)
+
+        # 출력 설정
+        output_group = QGroupBox("출력 설정")
+        output_layout = QVBoxLayout(output_group)
+
+        output_path_layout = QHBoxLayout()
+        output_path_layout.addWidget(QLabel("출력 경로:"))
+        self.output_edit = QLineEdit()
+        self.output_edit.setText(str(DEFAULT_OUTPUT_BASE))
+        output_path_layout.addWidget(self.output_edit)
+        self.output_btn = QPushButton("찾아보기...")
+        self.output_btn.clicked.connect(self._browse_output)
+        output_path_layout.addWidget(self.output_btn)
+        output_layout.addLayout(output_path_layout)
+
+        # CSV 옵션
+        self.export_csv_cb = QCheckBox("CSV도 함께 출력 (검증용)")
+        output_layout.addWidget(self.export_csv_cb)
+
+        layout.addWidget(output_group)
+
+        # 진행 상태
+        progress_group = QGroupBox("진행 상태")
+        progress_layout = QVBoxLayout(progress_group)
+
+        self.progress_bar = QProgressBar()
+        progress_layout.addWidget(self.progress_bar)
+
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(150)
+        progress_layout.addWidget(self.log_text)
+
+        layout.addWidget(progress_group)
+
+        # 버튼
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        self.start_btn = QPushButton("변환 시작")
+        self.start_btn.clicked.connect(self._start_conversion)
+        self.start_btn.setEnabled(False)
+        button_layout.addWidget(self.start_btn)
+
+        self.cancel_btn = QPushButton("취소")
+        self.cancel_btn.clicked.connect(self._cancel_conversion)
+        self.cancel_btn.setEnabled(False)
+        button_layout.addWidget(self.cancel_btn)
+
+        layout.addLayout(button_layout)
+
+    def _browse_source(self):
+        """소스 폴더 선택"""
+        path = QFileDialog.getExistingDirectory(
+            self, "소스 폴더 선택", str(Path.home())
+        )
+        if path:
+            self.source_edit.setText(path)
+
+    def _browse_output(self):
+        """출력 폴더 선택"""
+        path = QFileDialog.getExistingDirectory(
+            self, "출력 폴더 선택", self.output_edit.text()
+        )
+        if path:
+            self.output_edit.setText(path)
+
+    def _scan_sessions(self):
+        """세션 스캔"""
+        source_path = self.source_edit.text().strip()
+        if not source_path:
+            QMessageBox.warning(self, "경고", "소스 경로를 입력하세요.")
+            return
+
+        source = Path(source_path)
+        if not source.exists():
+            QMessageBox.warning(self, "경고", "소스 경로가 존재하지 않습니다.")
+            return
+
+        self._log("스캔 시작...")
+
+        if self.fusion_radio.isChecked():
+            parser = FusionParser()
+        else:
+            parser = RionParser()
+
+        self.sessions = parser.detect_sessions(source)
+        self._log(f"감지된 세션: {len(self.sessions)}개")
+
+        self._populate_table()
+        self.start_btn.setEnabled(len(self.sessions) > 0)
+
+    def _populate_table(self):
+        """테이블 채우기"""
+        self.session_table.setSortingEnabled(False)
+        self.session_table.setRowCount(len(self.sessions))
+
+        for row, session in enumerate(self.sessions):
+            # 체크박스
+            check_item = QTableWidgetItem()
+            check_item.setCheckState(Qt.CheckState.Checked)
+            check_item.setData(Qt.ItemDataRole.UserRole, row)
+            self.session_table.setItem(row, 0, check_item)
+
+            # 지점
+            point_item = QTableWidgetItem(session.point)
+            point_item.setData(Qt.ItemDataRole.UserRole, row)
+            self.session_table.setItem(row, 1, point_item)
+
+            # 측정일
+            date_item = QTableWidgetItem(
+                session.measurement_date.strftime("%Y-%m-%d")
+            )
+            date_item.setData(Qt.ItemDataRole.UserRole, row)
+            self.session_table.setItem(row, 2, date_item)
+
+            # 요일
+            weekday_idx = session.measurement_date.weekday()
+            weekday_item = QTableWidgetItem(WEEKDAY_KR[weekday_idx])
+            weekday_item.setData(Qt.ItemDataRole.UserRole, row)
+            self.session_table.setItem(row, 3, weekday_item)
+
+            # 장비
+            if hasattr(session, 'equipment_serial'):
+                equip = session.equipment_serial
+            else:
+                equip = "Rion"
+            equip_item = QTableWidgetItem(equip)
+            equip_item.setData(Qt.ItemDataRole.UserRole, row)
+            self.session_table.setItem(row, 4, equip_item)
+
+        self.session_table.setSortingEnabled(True)
+
+    def _apply_filters(self):
+        """필터 적용"""
+        exclude_weekend = self.exclude_weekend_cb.isChecked()
+
+        for row in range(self.session_table.rowCount()):
+            item = self.session_table.item(row, 0)
+            if item is None:
+                continue
+
+            session_idx = item.data(Qt.ItemDataRole.UserRole)
+            if session_idx is None or session_idx >= len(self.sessions):
+                continue
+
+            session = self.sessions[session_idx]
+            should_check = True
+
+            if exclude_weekend:
+                if session.measurement_date.weekday() >= 5:
+                    should_check = False
+
+            item.setCheckState(
+                Qt.CheckState.Checked if should_check else Qt.CheckState.Unchecked
+            )
+
+    def _select_all(self):
+        """전체 선택"""
+        for row in range(self.session_table.rowCount()):
+            item = self.session_table.item(row, 0)
+            if item:
+                item.setCheckState(Qt.CheckState.Checked)
+
+    def _deselect_all(self):
+        """전체 해제"""
+        for row in range(self.session_table.rowCount()):
+            item = self.session_table.item(row, 0)
+            if item:
+                item.setCheckState(Qt.CheckState.Unchecked)
+
+    def _get_selected_sessions(self) -> List[SessionType]:
+        """선택된 세션 반환"""
+        selected = []
+        for row in range(self.session_table.rowCount()):
+            item = self.session_table.item(row, 0)
+            if item and item.checkState() == Qt.CheckState.Checked:
+                session_idx = item.data(Qt.ItemDataRole.UserRole)
+                if session_idx is not None and session_idx < len(self.sessions):
+                    selected.append(self.sessions[session_idx])
+        return selected
+
+    def _start_conversion(self):
+        """변환 시작"""
+        selected = self._get_selected_sessions()
+        if not selected:
+            QMessageBox.warning(self, "경고", "선택된 세션이 없습니다.")
+            return
+
+        location = self.location_edit.text().strip()
+        if not location:
+            QMessageBox.warning(self, "경고", "위치명을 입력하세요.")
+            return
+
+        output_path = Path(self.output_edit.text().strip())
+        if not output_path.exists():
+            try:
+                output_path.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                QMessageBox.critical(self, "오류", f"출력 폴더 생성 실패: {e}")
+                return
+
+        self._set_processing_state(True)
+        self._log(f"변환 시작: {len(selected)}개 세션")
+
+        device_type = 'fusion' if self.fusion_radio.isChecked() else 'rion'
+
+        self.conversion_thread = ConversionThread(
+            selected,
+            output_path,
+            location,
+            self.order_edit.text().strip(),
+            self.weighting_combo.currentText(),
+            self.export_csv_cb.isChecked(),
+            device_type
+        )
+        self.conversion_thread.progress.connect(self._on_progress)
+        self.conversion_thread.session_complete.connect(self._on_session_complete)
+        self.conversion_thread.finished_all.connect(self._on_finished)
+        self.conversion_thread.start()
+
+    def _cancel_conversion(self):
+        """변환 취소"""
+        if self.conversion_thread:
+            self.conversion_thread.cancel()
+            self._log("취소 요청됨...")
+
+    def _set_processing_state(self, processing: bool):
+        """처리 상태 UI 변경"""
+        self.start_btn.setEnabled(not processing)
+        self.cancel_btn.setEnabled(processing)
+        self.scan_btn.setEnabled(not processing)
+
+    def _on_progress(self, current: int, total: int, message: str):
+        """진행 업데이트"""
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+
+    def _on_session_complete(self, idx: int, success: bool, message: str):
+        """세션 완료"""
+        status = "성공" if success else "실패"
+        self._log(f"[{status}] {message}")
+
+    def _on_finished(self, success_count: int, fail_count: int):
+        """전체 완료"""
+        self._set_processing_state(False)
+        self._log(f"완료: 성공 {success_count}개, 실패 {fail_count}개")
+
+        QMessageBox.information(
+            self, "완료",
+            f"변환 완료\n성공: {success_count}개\n실패: {fail_count}개"
+        )
+
+    def _log(self, message: str):
+        """로그 출력"""
+        self.log_text.append(message)
+        cursor = self.log_text.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.log_text.setTextCursor(cursor)
+
+
+def main():
+    """메인 엔트리"""
+    app = QApplication(sys.argv)
+    app.setStyle('Fusion')
+
+    window = MainWindow()
+    window.show()
+
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

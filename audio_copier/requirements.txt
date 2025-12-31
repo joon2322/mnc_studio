@@ -1,0 +1,4 @@
+# MNC Audio Copier v1.0 Dependencies
+
+# GUI
+PyQt6>=6.5.0

@@ -1,0 +1,44 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(pip:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(chmod:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(source:*)",
+      "Bash(cd:*)",
+      "Bash(tree:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep"
+    ],
+    "deny": [
+      "Bash(rm -rf /opt/mnc-system*)",
+      "Bash(rm -rf /*)",
+      "Bash(sudo rm -rf*)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf ~/*)",
+      "Bash(rm -rf /home/*)",
+      "Bash(rm -rf /var/*)",
+      "Bash(rm -rf /mnt/*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": {
+      "bash_safety_check": {
+        "description": "Block dangerous rm -rf commands",
+        "pattern": "rm\\s+-rf\\s+(/opt|/var|/home|/mnt|/)",
+        "action": "deny",
+        "message": "BLOCKED: Dangerous rm -rf command detected!"
+      }
+    }
+  }
+}
