@@ -1,89 +1,97 @@
 """파서 베이스 클래스"""
 
-import logging
 from abc import ABC, abstractmethod
-from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
-
-import numpy as np
+from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Optional, Callable
 import pandas as pd
+import numpy as np
 
-from ..config import SECONDS_PER_DAY, FREQUENCY_BANDS
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-logger = logging.getLogger(__name__)
+from src.config import EXPECTED_ROWS, PARQUET_SCHEMA, FREQUENCY_COLUMNS
 
 
 class BaseParser(ABC):
-    """파서 베이스 클래스"""
+    """파서 추상 베이스 클래스"""
 
     def __init__(self):
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.errors: List[str] = []
+        self.warnings: List[str] = []
+        self._log_callback: Optional[Callable[[str], None]] = None
 
-    def create_full_day_dataframe(
-        self,
-        measurement_date: date,
-        include_bands: bool = True
-    ) -> pd.DataFrame:
+    def set_log_callback(self, callback: Callable[[str], None]):
+        """로그 콜백 설정 (GUI 연동용)"""
+        self._log_callback = callback
+
+    @abstractmethod
+    def detect(self, folder_path: Path) -> bool:
+        """해당 장비 폴더인지 감지"""
+        pass
+
+    @abstractmethod
+    def process(self, device_folder: Path, weighting: str = 'LAS',
+                include_bands: bool = True) -> Dict[str, pd.DataFrame]:
         """
-        86,400행의 빈 DataFrame 생성
+        장비 데이터 처리
 
         Args:
-            measurement_date: 측정일
+            device_folder: 장비 폴더 경로
+            weighting: 가중치 ('LAS' 또는 'LCS')
             include_bands: 주파수 밴드 포함 여부
 
         Returns:
-            timestamp, spl, (밴드) 컬럼을 가진 DataFrame
+            {날짜문자열: DataFrame} 딕셔너리
         """
-        # 자정부터 시작하는 타임스탬프 생성
-        start = datetime.combine(measurement_date, datetime.min.time())
-        timestamps = [start + timedelta(seconds=i) for i in range(SECONDS_PER_DAY)]
+        pass
 
-        # 기본 컬럼
-        data = {
-            'timestamp': timestamps,
-            'spl': np.nan,
-        }
+    def create_full_day_df(self, date: datetime, include_bands: bool = True) -> pd.DataFrame:
+        """
+        86,400행 DataFrame 생성 (NaN 초기화)
 
-        # 주파수 밴드 컬럼 추가
+        Args:
+            date: 기준 날짜
+            include_bands: 주파수 밴드 포함 여부
+
+        Returns:
+            86,400행 DataFrame (00:00:00 ~ 23:59:59)
+        """
+        start = date.replace(hour=0, minute=0, second=0, microsecond=0)
+        timestamps = [start + timedelta(seconds=i) for i in range(EXPECTED_ROWS)]
+
+        data = {'timestamp': timestamps, 'spl': np.nan}
+
         if include_bands:
-            for band in FREQUENCY_BANDS:
-                data[band] = np.nan
+            for col in FREQUENCY_COLUMNS:
+                data[col] = np.nan
 
-        df = pd.DataFrame(data)
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        return pd.DataFrame(data)
 
-        return df
+    def log_error(self, message: str):
+        """에러 로그"""
+        self.errors.append(message)
+        log_msg = f"[ERROR] {message}"
+        print(log_msg)
+        if self._log_callback:
+            self._log_callback(log_msg)
 
-    @abstractmethod
-    def parse(
-        self,
-        input_path: Path,
-        measurement_date: date,
-        weighting: str = 'LAS'
-    ) -> pd.DataFrame:
-        """
-        데이터 파싱
+    def log_warning(self, message: str):
+        """경고 로그"""
+        self.warnings.append(message)
+        log_msg = f"[WARN] {message}"
+        print(log_msg)
+        if self._log_callback:
+            self._log_callback(log_msg)
 
-        Args:
-            input_path: 입력 경로 (파일 또는 폴더)
-            measurement_date: 측정일
-            weighting: 가중치 (LAS 또는 LCS)
+    def log_info(self, message: str):
+        """정보 로그"""
+        log_msg = f"[INFO] {message}"
+        print(log_msg)
+        if self._log_callback:
+            self._log_callback(log_msg)
 
-        Returns:
-            86,400행의 DataFrame
-        """
-        pass
-
-    @abstractmethod
-    def detect_sessions(self, root_path: Path) -> list:
-        """
-        세션 감지
-
-        Args:
-            root_path: 검색 루트 경로
-
-        Returns:
-            감지된 세션 목록
-        """
-        pass
+    def clear_logs(self):
+        """로그 초기화"""
+        self.errors = []
+        self.warnings = []
