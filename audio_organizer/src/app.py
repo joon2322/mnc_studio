@@ -345,7 +345,7 @@ class MainWindow(QMainWindow):
         self.output_btn.clicked.connect(self._browse_output)
         row2.addWidget(self.output_btn)
         self.open_output_btn = QPushButton("열기")
-        self.open_output_btn.setFixedWidth(50)
+        self.open_output_btn.setFixedWidth(70)
         self.open_output_btn.clicked.connect(self._open_output_folder)
         row2.addWidget(self.open_output_btn)
         settings_layout.addLayout(row2)
