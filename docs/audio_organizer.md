@@ -67,6 +67,7 @@ check_item.setData(Qt.ItemDataRole.UserRole, row)
 | 백그라운드 스캔 | UI 멈춤 방지 | `app.py:ScanThread` |
 | 주말 제외 필터 | 토/일 자동 체크 해제 | `app.py:_apply_filters` |
 | 부분 데이터 제외 | 48개 미만 파일 제외 | `app.py:_apply_filters` |
+| BID 크기 검증 | 30분=184,320,000 bytes | `validators/fusion_validator.py` |
 | BID→WAV 변환 | >> 8 시프트 | `processors/fusion_processor.py` |
 | manifest.json 생성 | 메타데이터 기록 | `utils/manifest.py` |
 | 숫자 정렬 | 파일수 컬럼 정렬 | `app.py:NumericTableWidgetItem` |
@@ -134,10 +135,20 @@ audio_organizer/
 /mnt/audio_archive/raw_audio/
 └── {위치}/
     └── {지점}/
-        └── session_{날짜}_{위치}_{지점}_{측정일}_{요일}_{시작시간}/
+        └── YYYYMMDD(요일)/
             ├── 20251205_200000_203000.wav
             ├── 20251205_203000_210000.wav
             ├── ...
+            └── manifest.json
+```
+
+**예시**:
+```
+/mnt/audio_archive/raw_audio/
+└── 사천비행장/
+    └── N-1/
+        └── 20251205(금)/
+            ├── 20251205_200000_203000.wav
             └── manifest.json
 ```
 

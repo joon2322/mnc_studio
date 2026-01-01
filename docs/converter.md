@@ -37,9 +37,12 @@ def round_half_up(value, decimals=1):
 **파일**: `src/parsers/fusion_parser.py`
 
 ```python
+from ..utils.round_utils import round_half_up
+
 # BID 파일 읽기 (little-endian int16, dB * 100 저장)
 data = np.fromfile(file_path, dtype='<i2')
-return data.astype(float) / 100.0  # dB * 100 → dB
+db_values = data.astype(float) / 100.0  # dB * 100 → dB
+return np.array([round_half_up(v, 1) for v in db_values])  # 사사오입
 ```
 
 ### 3. Rion .rnd 파일 읽기
@@ -47,6 +50,8 @@ return data.astype(float) / 100.0  # dB * 100 → dB
 **파일**: `src/parsers/rion_parser.py`
 
 ```python
+from ..utils.round_utils import round_half_up
+
 # 인코딩 fallback 처리
 for encoding in ['utf-8', 'utf-8-sig', 'cp949']:
     try:
@@ -56,7 +61,23 @@ for encoding in ['utf-8', 'utf-8-sig', 'cp949']:
         continue
 
 # 가중치별 컬럼 선택
-df['spl'] = df['Main'] if weighting == 'LAS' else df['Sub']
+# - LAS: Main → Leq fallback (Leq는 보통 A-weighted)
+# - LCS: Sub 필수 (Leq fallback 없음)
+if weighting == 'LAS':
+    if 'Main' in df.columns:
+        spl_col = 'Main'
+    elif 'Leq' in df.columns:
+        spl_col = 'Leq'  # A-weighting fallback
+    else:
+        raise ValueError("A-weighting(Main/Leq) 컬럼 없음")
+elif weighting == 'LCS':
+    if 'Sub' in df.columns:
+        spl_col = 'Sub'
+    else:
+        raise ValueError("C-weighting(Sub) 컬럼 없음")
+
+df['spl'] = df[spl_col]
+df['spl'] = df['spl'].apply(lambda x: round_half_up(x, 1) if pd.notna(x) else x)
 ```
 
 ### 4. 86,400행 DataFrame 생성

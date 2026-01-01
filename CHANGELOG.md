@@ -11,8 +11,8 @@ MNC Studio 도구 모음의 모든 주요 변경 사항을 기록합니다.
 ### 예정
 - Audio Organizer: 로그 복사/저장 버튼
 - Audio Organizer: QSettings로 경로/필터 저장
-- Converter: 86,400행 검증 기능
-- Converter: 데이터 커버리지 리포트
+- Converter: 검증 리포트 UI 개선
+- Converter: 일별 데이터 완성도 시각화
 
 ---
 
@@ -92,8 +92,6 @@ MNC Studio 도구 모음의 모든 주요 변경 사항을 기록합니다.
 - 개발 플로우 지침 (CLAUDE.md)
 - 검토자 협업 프로세스
 
-#### Fixed
-- 바탕화면 바로가기 문제 해결 (`~/바탕화면` vs `~/Desktop`)
 
 ---
 
