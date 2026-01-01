@@ -118,6 +118,44 @@ bash /opt/mnc-system/mnc_studio/scripts/run_converter.sh
 
 ---
 
+## 개발 플로우
+
+> **원칙**: 속도보다 정확성, 안전성, 확실성
+
+### 필수 프로세스
+
+1. **작업 전 환경 확인** - 경로, 설정, XDG 디렉토리 등 가정하지 말고 확인
+2. **검토자 협업** - 복잡하거나 환경 의존적 작업 시 검토자에게 확인 요청
+3. **실제 환경 테스트** - 터미널뿐 아니라 GUI 클릭 등 실제 사용 환경에서 검증
+
+### 검토자 협업 시점
+
+- 시스템/경로/환경 변수 관련 작업
+- 문제가 반복될 때 (같은 해결책 3회 이상 시도 금지)
+- 확신이 없을 때
+
+### 환경 확인 체크리스트 (Linux GUI)
+
+```bash
+# XDG 데스크톱 경로 확인 (한글 Ubuntu 주의!)
+cat ~/.config/user-dirs.dirs | grep DESKTOP
+xdg-user-dir DESKTOP
+
+# .desktop 파일 위치 확인
+ls ~/바탕화면/*.desktop  # 한글
+ls ~/Desktop/*.desktop   # 영어
+```
+
+---
+
+## GitHub 저장소
+
+- **URL**: https://github.com/joon2322/mnc_studio
+- **토큰**: ghp_p3lG... (별도 보관)
+- **용도**: 코드 백업 및 버전 관리
+
+---
+
 ## 금지 사항
 
 ### 절대 실행 금지 명령어
@@ -142,7 +180,8 @@ bash /opt/mnc-system/mnc_studio/scripts/run_converter.sh
 |------|------|----------|
 | 2025-12-31 | v1.0.0 | Audio Organizer, Copier 완성 |
 | 2025-12-31 | v3.0.0 | Converter 기본 구조 완성 |
+| 2026-01-01 | - | 개발 플로우 지침 추가 (검토자 협업 필수화) |
 
 ---
 
-**최종 업데이트**: 2025-12-31
+**최종 업데이트**: 2026-01-01
