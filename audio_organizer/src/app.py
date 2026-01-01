@@ -20,14 +20,15 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QSplitter,
 )
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QDesktopServices
+from PyQt6.QtCore import QUrl
 
 from .config import APP_NAME, APP_VERSION, DEFAULT_OUTPUT_BASE, WEEKDAY_KR
 from .detectors import AudioSession, FusionDetector
@@ -42,13 +43,41 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class ScanThread(QThread):
+    """세션 스캔 백그라운드 스레드"""
+
+    started_signal = pyqtSignal()
+    progress = pyqtSignal(str)  # 진행 메시지
+    finished_signal = pyqtSignal(list)  # 감지된 세션 리스트
+    error = pyqtSignal(str)  # 에러 메시지
+
+    def __init__(self, source_path: Path):
+        super().__init__()
+        self.source_path = source_path
+
+    def run(self):
+        try:
+            self.started_signal.emit()
+            self.progress.emit("[INFO] 스캔 시작...")
+
+            detector = FusionDetector()
+            sessions = detector.detect(self.source_path)
+
+            self.progress.emit(f"[INFO] 감지된 세션: {len(sessions)}개")
+            self.finished_signal.emit(sessions)
+
+        except Exception as e:
+            logger.exception("스캔 실패")
+            self.error.emit(f"[ERROR] 스캔 실패: {str(e)}")
+
+
 class ProcessingThread(QThread):
     """백그라운드 처리 스레드"""
 
     progress = pyqtSignal(int, int, str)  # current, total, message
     session_complete = pyqtSignal(int, bool, str)  # session_idx, success, message
     log = pyqtSignal(str)  # 로그 메시지
-    finished_all = pyqtSignal(int, int)  # success_count, fail_count
+    finished_all = pyqtSignal(int, int, bool)  # success_count, fail_count, was_cancelled
 
     def __init__(
         self,
@@ -135,13 +164,31 @@ class ProcessingThread(QThread):
                 self.session_complete.emit(idx, False, str(e))
                 fail_count += 1
 
-        self.log.emit(f"\n[INFO] === 추출 완료 ===")
-        self.log.emit(f"[INFO] 성공: {success_count}개, 실패: {fail_count}개")
-        self.finished_all.emit(success_count, fail_count)
+        if self._is_cancelled:
+            self.log.emit(f"\n[WARN] === 작업 취소됨 ===")
+            self.log.emit(f"[INFO] 취소 전 완료: 성공 {success_count}개, 실패 {fail_count}개")
+        else:
+            self.log.emit(f"\n[INFO] === 추출 완료 ===")
+            self.log.emit(f"[INFO] 성공: {success_count}개, 실패: {fail_count}개")
+
+        self.finished_all.emit(success_count, fail_count, self._is_cancelled)
 
     def cancel(self):
         """취소"""
         self._is_cancelled = True
+
+
+class NumericTableWidgetItem(QTableWidgetItem):
+    """숫자 정렬을 지원하는 테이블 아이템"""
+
+    def __init__(self, value: int):
+        super().__init__(str(value))
+        self._value = value
+
+    def __lt__(self, other):
+        if isinstance(other, NumericTableWidgetItem):
+            return self._value < other._value
+        return super().__lt__(other)
 
 
 class MainWindow(QMainWindow):
@@ -151,19 +198,20 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.sessions: List[AudioSession] = []
         self.processing_thread: Optional[ProcessingThread] = None
+        self.scan_thread: Optional[ScanThread] = None
 
         self._init_ui()
 
     def _init_ui(self):
-        """UI 초기화"""
+        """UI 초기화 - 옵션 B: 테이블 중심 + 로그 하단"""
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
-        self.setMinimumSize(1100, 800)
+        self.setMinimumSize(1000, 800)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        main_layout = QHBoxLayout(central_widget)
-        main_layout.setSpacing(12)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setSpacing(8)
         main_layout.setContentsMargins(12, 12, 12, 12)
 
         # 스타일시트 적용
@@ -193,6 +241,10 @@ class MainWindow(QMainWindow):
             QPushButton:pressed {
                 background-color: #d0d0d0;
             }
+            QPushButton:disabled {
+                background-color: #f5f5f5;
+                color: #a0a0a0;
+            }
             QPushButton#startBtn {
                 background-color: #2563eb;
                 color: white;
@@ -204,7 +256,7 @@ class MainWindow(QMainWindow):
                 background-color: #1d4ed8;
             }
             QPushButton#startBtn:disabled {
-                background-color: #a0a0a0;
+                background-color: #93c5fd;
             }
             QPushButton#cancelBtn {
                 background-color: #dc2626;
@@ -215,7 +267,7 @@ class MainWindow(QMainWindow):
                 background-color: #b91c1c;
             }
             QPushButton#cancelBtn:disabled {
-                background-color: #a0a0a0;
+                background-color: #fca5a5;
             }
             QLineEdit {
                 padding: 6px;
@@ -224,6 +276,9 @@ class MainWindow(QMainWindow):
             }
             QLineEdit:focus {
                 border: 1px solid #2563eb;
+            }
+            QLineEdit:disabled {
+                background-color: #f5f5f5;
             }
             QProgressBar {
                 border: 1px solid #c0c0c0;
@@ -247,52 +302,57 @@ class MainWindow(QMainWindow):
                 border-bottom: 1px solid #c0c0c0;
                 font-weight: bold;
             }
+            QCheckBox:disabled {
+                color: #a0a0a0;
+            }
         """)
 
-        # ========== 좌측 패널 (설정) ==========
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setSpacing(8)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        # ========== 1. 설정 영역 (상단) ==========
+        settings_group = QGroupBox("설정")
+        settings_layout = QVBoxLayout(settings_group)
+        settings_layout.setSpacing(8)
 
-        # 1. 입력 설정
-        input_group = QGroupBox("입력 설정")
-        input_layout = QVBoxLayout(input_group)
-        input_layout.setSpacing(8)
-
-        # 소스 경로
-        source_layout = QHBoxLayout()
-        source_layout.addWidget(QLabel("소스 경로:"))
+        # 첫 번째 줄: 소스 경로
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("소스 경로:"))
         self.source_edit = QLineEdit()
         self.source_edit.setPlaceholderText("Fusion 데이터 루트 폴더 선택...")
-        source_layout.addWidget(self.source_edit)
+        row1.addWidget(self.source_edit, stretch=1)
         self.source_btn = QPushButton("찾아보기")
         self.source_btn.setFixedWidth(90)
         self.source_btn.clicked.connect(self._browse_source)
-        source_layout.addWidget(self.source_btn)
-        input_layout.addLayout(source_layout)
+        row1.addWidget(self.source_btn)
+        self.scan_btn = QPushButton("스캔")
+        self.scan_btn.setFixedWidth(70)
+        self.scan_btn.clicked.connect(self._scan_sessions)
+        row1.addWidget(self.scan_btn)
+        settings_layout.addLayout(row1)
 
-        # 위치명
-        location_layout = QHBoxLayout()
-        location_layout.addWidget(QLabel("위치명:"))
+        # 두 번째 줄: 위치명 + 출력 경로
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("위치명:"))
         self.location_edit = QLineEdit()
         self.location_edit.setPlaceholderText("예: 광주비행장")
-        location_layout.addWidget(self.location_edit)
-        location_layout.addStretch()
-        input_layout.addLayout(location_layout)
+        self.location_edit.setFixedWidth(150)
+        row2.addWidget(self.location_edit)
+        row2.addSpacing(20)
+        row2.addWidget(QLabel("출력 경로:"))
+        self.output_edit = QLineEdit()
+        self.output_edit.setText(str(DEFAULT_OUTPUT_BASE))
+        row2.addWidget(self.output_edit, stretch=1)
+        self.output_btn = QPushButton("찾아보기")
+        self.output_btn.setFixedWidth(90)
+        self.output_btn.clicked.connect(self._browse_output)
+        row2.addWidget(self.output_btn)
+        self.open_output_btn = QPushButton("열기")
+        self.open_output_btn.setFixedWidth(50)
+        self.open_output_btn.clicked.connect(self._open_output_folder)
+        row2.addWidget(self.open_output_btn)
+        settings_layout.addLayout(row2)
 
-        # 스캔 버튼
-        scan_layout = QHBoxLayout()
-        self.scan_btn = QPushButton("세션 스캔")
-        self.scan_btn.setFixedWidth(100)
-        self.scan_btn.clicked.connect(self._scan_sessions)
-        scan_layout.addWidget(self.scan_btn)
-        scan_layout.addStretch()
-        input_layout.addLayout(scan_layout)
+        main_layout.addWidget(settings_group)
 
-        left_layout.addWidget(input_group)
-
-        # 2. 세션 테이블
+        # ========== 2. 세션 테이블 (메인, 크게) ==========
         table_group = QGroupBox("감지된 세션")
         table_layout = QVBoxLayout(table_group)
 
@@ -329,137 +389,109 @@ class MainWindow(QMainWindow):
             QHeaderView.ResizeMode.Stretch
         )
         self.session_table.verticalHeader().setVisible(False)
+        self.session_table.setMinimumHeight(300)
         table_layout.addWidget(self.session_table)
 
-        left_layout.addWidget(table_group)
+        main_layout.addWidget(table_group, stretch=1)  # 테이블이 가장 크게
 
-        # 3. 출력 설정
-        output_group = QGroupBox("출력 설정")
-        output_layout = QVBoxLayout(output_group)
-
-        output_path_layout = QHBoxLayout()
-        output_path_layout.addWidget(QLabel("출력 경로:"))
-        self.output_edit = QLineEdit()
-        self.output_edit.setText(str(DEFAULT_OUTPUT_BASE))
-        output_path_layout.addWidget(self.output_edit)
-        self.output_btn = QPushButton("찾아보기")
-        self.output_btn.setFixedWidth(90)
-        self.output_btn.clicked.connect(self._browse_output)
-        output_path_layout.addWidget(self.output_btn)
-        output_layout.addLayout(output_path_layout)
-
-        left_layout.addWidget(output_group)
-
-        # 4. 실행
-        action_group = QGroupBox("실행")
-        action_layout = QVBoxLayout(action_group)
-        action_layout.setSpacing(8)
-
-        # 진행 상황
-        self.progress_label = QLabel("대기 중")
-        self.progress_label.setStyleSheet("color: #666;")
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(0)
-        action_layout.addWidget(self.progress_label)
-        action_layout.addWidget(self.progress_bar)
-
-        # 버튼
-        btn_layout = QHBoxLayout()
-        self.start_btn = QPushButton("추출 시작")
-        self.start_btn.setObjectName("startBtn")
-        self.start_btn.setMinimumHeight(45)
-        self.start_btn.clicked.connect(self._start_processing)
-        self.start_btn.setEnabled(False)
-        btn_layout.addWidget(self.start_btn, stretch=2)
-
-        self.cancel_btn = QPushButton("취소")
-        self.cancel_btn.setObjectName("cancelBtn")
-        self.cancel_btn.setMinimumHeight(45)
-        self.cancel_btn.clicked.connect(self._cancel_processing)
-        self.cancel_btn.setEnabled(False)
-        btn_layout.addWidget(self.cancel_btn, stretch=1)
-
-        action_layout.addLayout(btn_layout)
-
-        left_layout.addWidget(action_group)
-
-        # ========== 우측 패널 (로그) ==========
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setSpacing(0)
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        # ========== 3. 로그 영역 (하단) ==========
+        log_group = QGroupBox("로그")
+        log_layout = QVBoxLayout(log_group)
+        log_layout.setContentsMargins(0, 10, 0, 0)
 
         # 로그 헤더
         log_header = QWidget()
         log_header.setStyleSheet("background-color: #1e3a5f; border-radius: 4px 4px 0 0;")
         log_header_layout = QHBoxLayout(log_header)
-        log_header_layout.setContentsMargins(12, 8, 12, 8)
+        log_header_layout.setContentsMargins(12, 6, 12, 6)
+
         log_title = QLabel("추출 로그")
-        log_title.setStyleSheet("color: #fff; font-weight: bold; font-size: 12px;")
+        log_title.setStyleSheet("color: #fff; font-weight: bold; font-size: 11px;")
         log_header_layout.addWidget(log_title)
 
-        # 상태 라벨
         self.stats_label = QLabel("")
-        self.stats_label.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        self.stats_label.setStyleSheet("color: #94a3b8; font-size: 10px;")
         log_header_layout.addWidget(self.stats_label)
         log_header_layout.addStretch()
 
-        # 로그 버튼 스타일
+        # 로그 버튼
         log_btn_style = """
             QPushButton {
                 background-color: #2d4a6f;
                 color: #ccc;
                 border: none;
-                padding: 4px 12px;
+                padding: 3px 10px;
                 border-radius: 3px;
-                font-size: 11px;
+                font-size: 10px;
             }
             QPushButton:hover {
                 background-color: #3d5a7f;
             }
         """
-
-        # 지우기 버튼
         self.clear_log_btn = QPushButton("지우기")
         self.clear_log_btn.setStyleSheet(log_btn_style)
         self.clear_log_btn.clicked.connect(self._clear_log)
         log_header_layout.addWidget(self.clear_log_btn)
 
-        right_layout.addWidget(log_header)
+        log_layout.addWidget(log_header)
 
-        # 로그 텍스트 (파란색 배경)
+        # 로그 텍스트
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(150)
         self.log_text.setStyleSheet("""
             QTextEdit {
                 background-color: #0f172a;
                 color: #e2e8f0;
                 font-family: 'Consolas', 'Courier New', monospace;
-                font-size: 11px;
+                font-size: 10px;
                 border: none;
                 border-radius: 0 0 4px 4px;
-                padding: 8px;
+                padding: 6px;
             }
         """)
-        right_layout.addWidget(self.log_text)
+        log_layout.addWidget(self.log_text)
 
-        # ========== 스플리터로 좌우 배치 ==========
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(left_panel)
-        splitter.addWidget(right_panel)
-        splitter.setSizes([500, 600])  # 좌측 500, 우측 600
-        splitter.setHandleWidth(8)
-        splitter.setStyleSheet("""
-            QSplitter::handle {
-                background-color: #e0e0e0;
-                border-radius: 2px;
-            }
-            QSplitter::handle:hover {
-                background-color: #2563eb;
-            }
-        """)
+        main_layout.addWidget(log_group)
 
-        main_layout.addWidget(splitter)
+        # ========== 4. 실행 영역 (하단) ==========
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(12)
+
+        # 진행 상황
+        progress_widget = QWidget()
+        progress_layout = QVBoxLayout(progress_widget)
+        progress_layout.setContentsMargins(0, 0, 0, 0)
+        progress_layout.setSpacing(4)
+
+        self.progress_label = QLabel("대기 중")
+        self.progress_label.setStyleSheet("color: #666; font-size: 11px;")
+        progress_layout.addWidget(self.progress_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        progress_layout.addWidget(self.progress_bar)
+
+        action_layout.addWidget(progress_widget, stretch=1)
+
+        # 버튼
+        self.start_btn = QPushButton("추출 시작")
+        self.start_btn.setObjectName("startBtn")
+        self.start_btn.setMinimumHeight(50)
+        self.start_btn.setMinimumWidth(120)
+        self.start_btn.clicked.connect(self._start_processing)
+        self.start_btn.setEnabled(False)
+        action_layout.addWidget(self.start_btn)
+
+        self.cancel_btn = QPushButton("취소")
+        self.cancel_btn.setObjectName("cancelBtn")
+        self.cancel_btn.setMinimumHeight(50)
+        self.cancel_btn.setMinimumWidth(80)
+        self.cancel_btn.clicked.connect(self._cancel_processing)
+        self.cancel_btn.setEnabled(False)
+        action_layout.addWidget(self.cancel_btn)
+
+        main_layout.addLayout(action_layout)
 
     def _browse_source(self):
         """소스 폴더 선택"""
@@ -477,8 +509,16 @@ class MainWindow(QMainWindow):
         if path:
             self.output_edit.setText(path)
 
+    def _open_output_folder(self):
+        """출력 폴더 열기"""
+        folder = self.output_edit.text().strip()
+        if folder and Path(folder).exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        else:
+            QMessageBox.warning(self, "경고", "출력 폴더가 존재하지 않습니다.")
+
     def _scan_sessions(self):
-        """세션 스캔"""
+        """세션 스캔 (백그라운드 스레드)"""
         source_path = self.source_edit.text().strip()
         if not source_path:
             QMessageBox.warning(self, "경고", "소스 경로를 입력하세요.")
@@ -489,14 +529,28 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "경고", "소스 경로가 존재하지 않습니다.")
             return
 
-        self._log("[INFO] 스캔 시작...")
+        # 스캔 스레드 시작
+        self.scan_thread = ScanThread(source)
+        self.scan_thread.started_signal.connect(self._on_scan_started)
+        self.scan_thread.progress.connect(self._on_log)
+        self.scan_thread.finished_signal.connect(self._on_scan_finished)
+        self.scan_thread.error.connect(self._on_log)
+        self.scan_thread.start()
 
-        detector = FusionDetector()
-        self.sessions = detector.detect(source)
+    def _on_scan_started(self):
+        """스캔 시작됨"""
+        self.scan_btn.setEnabled(False)
+        self.scan_btn.setText("스캔중...")
+        self.source_btn.setEnabled(False)
 
-        self._log(f"[INFO] 감지된 세션: {len(self.sessions)}개")
-
+    def _on_scan_finished(self, sessions: List[AudioSession]):
+        """스캔 완료"""
+        self.sessions = sessions
         self._populate_table()
+
+        self.scan_btn.setEnabled(True)
+        self.scan_btn.setText("스캔")
+        self.source_btn.setEnabled(True)
         self.start_btn.setEnabled(len(self.sessions) > 0)
 
     def _populate_table(self):
@@ -508,7 +562,6 @@ class MainWindow(QMainWindow):
             # 체크박스
             check_item = QTableWidgetItem()
             check_item.setCheckState(Qt.CheckState.Checked)
-            # 원본 세션 인덱스 저장 (정렬 후에도 올바른 세션 참조용)
             check_item.setData(Qt.ItemDataRole.UserRole, row)
             self.session_table.setItem(row, 0, check_item)
 
@@ -533,17 +586,16 @@ class MainWindow(QMainWindow):
             weekday_idx = session.measurement_date.weekday()
             weekday_item = QTableWidgetItem(WEEKDAY_KR[weekday_idx])
             weekday_item.setData(Qt.ItemDataRole.UserRole, row)
-            # 주말은 배경색 다르게
             if weekday_idx >= 5:
                 weekday_item.setBackground(QColor(255, 230, 230))
             self.session_table.setItem(row, 4, weekday_item)
 
-            # 파일수
-            file_count_item = QTableWidgetItem(str(session.bid_count))
+            # 파일수 (숫자 정렬 지원)
+            file_count_item = NumericTableWidgetItem(session.bid_count)
             file_count_item.setData(Qt.ItemDataRole.UserRole, row)
             self.session_table.setItem(row, 5, file_count_item)
 
-            # 상태 (48개 = 완전, 그 외 = 부분)
+            # 상태
             if session.bid_count >= 48:
                 status = "완전"
                 status_color = QColor(200, 255, 200)
@@ -567,7 +619,6 @@ class MainWindow(QMainWindow):
         exclude_partial = self.exclude_partial_cb.isChecked()
 
         for row in range(self.session_table.rowCount()):
-            # 원본 세션 인덱스 가져오기
             item = self.session_table.item(row, 0)
             if item is None:
                 continue
@@ -579,13 +630,11 @@ class MainWindow(QMainWindow):
             session = self.sessions[session_idx]
             should_check = True
 
-            # 주말 제외
             if exclude_weekend:
                 weekday = session.measurement_date.weekday()
-                if weekday >= 5:  # 토(5), 일(6)
+                if weekday >= 5:
                     should_check = False
 
-            # 부분 제외
             if exclude_partial and session.bid_count < 48:
                 should_check = False
 
@@ -614,7 +663,6 @@ class MainWindow(QMainWindow):
         for row in range(self.session_table.rowCount()):
             item = self.session_table.item(row, 0)
             if item and item.checkState() == Qt.CheckState.Checked:
-                # 원본 세션 인덱스로 접근
                 session_idx = item.data(Qt.ItemDataRole.UserRole)
                 if session_idx is not None and session_idx < len(self.sessions):
                     selected.append(self.sessions[session_idx])
@@ -665,11 +713,24 @@ class MainWindow(QMainWindow):
 
     def _set_processing_state(self, processing: bool):
         """처리 상태에 따른 UI 변경"""
+        # 버튼
         self.start_btn.setEnabled(not processing)
         self.cancel_btn.setEnabled(processing)
         self.scan_btn.setEnabled(not processing)
         self.source_btn.setEnabled(not processing)
         self.output_btn.setEnabled(not processing)
+
+        # 입력 필드
+        self.source_edit.setEnabled(not processing)
+        self.location_edit.setEnabled(not processing)
+        self.output_edit.setEnabled(not processing)
+
+        # 테이블 및 필터
+        self.session_table.setEnabled(not processing)
+        self.exclude_weekend_cb.setEnabled(not processing)
+        self.exclude_partial_cb.setEnabled(not processing)
+        self.select_all_btn.setEnabled(not processing)
+        self.deselect_all_btn.setEnabled(not processing)
 
     def _on_progress(self, current: int, total: int, message: str):
         """진행 업데이트"""
@@ -679,40 +740,45 @@ class MainWindow(QMainWindow):
 
     def _on_log(self, message: str):
         """로그 추가 (색상 적용)"""
-        # 색상 결정
         if '[ERROR]' in message:
-            color = '#f87171'  # 빨간색
+            color = '#f87171'
         elif '[WARN]' in message:
-            color = '#fbbf24'  # 노란색
+            color = '#fbbf24'
         elif '완료' in message or '성공' in message:
-            color = '#4ade80'  # 녹색
+            color = '#4ade80'
         else:
-            color = '#e2e8f0'  # 기본 밝은 색
+            color = '#e2e8f0'
 
-        # HTML로 색상 적용
         escaped = message.replace('<', '&lt;').replace('>', '&gt;')
         self.log_text.append(f'<span style="color: {color};">{escaped}</span>')
 
-        # 스크롤 맨 아래로
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
     def _on_session_complete(self, idx: int, success: bool, message: str):
         """세션 완료"""
-        # 테이블 상태 업데이트는 별도로 하지 않음 (로그로 충분)
         pass
 
-    def _on_finished(self, success_count: int, fail_count: int):
+    def _on_finished(self, success_count: int, fail_count: int, was_cancelled: bool):
         """전체 완료"""
         self._set_processing_state(False)
-        self.progress_label.setText(f"완료: 성공 {success_count}개, 실패 {fail_count}개")
-        self.stats_label.setText(f"성공: {success_count} | 실패: {fail_count}")
 
-        QMessageBox.information(
-            self,
-            "완료",
-            f"처리 완료\n성공: {success_count}개\n실패: {fail_count}개"
-        )
+        if was_cancelled:
+            self.progress_label.setText(f"취소됨 (완료: 성공 {success_count}개, 실패 {fail_count}개)")
+            self.stats_label.setText(f"취소됨 | 성공: {success_count} | 실패: {fail_count}")
+            QMessageBox.warning(
+                self,
+                "취소됨",
+                f"작업이 취소되었습니다.\n\n취소 전 완료:\n성공: {success_count}개\n실패: {fail_count}개"
+            )
+        else:
+            self.progress_label.setText(f"완료: 성공 {success_count}개, 실패 {fail_count}개")
+            self.stats_label.setText(f"성공: {success_count} | 실패: {fail_count}")
+            QMessageBox.information(
+                self,
+                "완료",
+                f"처리 완료\n성공: {success_count}개\n실패: {fail_count}개"
+            )
 
     def _log(self, message: str):
         """로그 출력 (내부용)"""
@@ -727,8 +793,6 @@ class MainWindow(QMainWindow):
 def main():
     """메인 엔트리"""
     app = QApplication(sys.argv)
-
-    # 스타일 설정
     app.setStyle('Fusion')
 
     window = MainWindow()
