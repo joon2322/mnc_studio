@@ -3,22 +3,27 @@
 from pathlib import Path
 
 # ===== 버전 =====
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 APP_VERSION = VERSION  # app.py 호환
 APP_NAME = "MNC Audio Organizer"
 
 # ===== Fusion 오디오 설정 =====
 FUSION_SAMPLE_RATE = 25600          # Hz
-FUSION_BIT_DEPTH = 16               # bits (출력 WAV)
-FUSION_BITS_PER_SAMPLE = 16         # bits (출력 WAV, alias)
+FUSION_BIT_DEPTH = 32               # bits (출력 WAV)
+FUSION_BITS_PER_SAMPLE = 32         # bits (출력 WAV, alias)
 FUSION_CHANNELS = 1                 # mono
 FUSION_BID_BYTES_PER_SAMPLE = 4     # BID 파일은 32-bit (4 bytes)
-FUSION_WAV_BYTES_PER_SAMPLE = 2     # WAV 출력은 16-bit (2 bytes)
+FUSION_WAV_BYTES_PER_SAMPLE = 4     # WAV 출력은 32-bit (4 bytes)
+
+# ===== 피크 정규화 상수 =====
+# 정식 Fusion 프로그램 동일값 (INT32_MAX - 5)
+# 검증: 미여도, 낙동, 수원 데이터에서 100% 샘플 일치 확인
+FUSION_FULL_SCALE = 2_147_483_642
 FUSION_SEGMENT_DURATION = 30 * 60   # 30분 = 1800초
 
 # ===== WAV 출력 설정 =====
 OUTPUT_CHANNELS = 1                  # mono
-OUTPUT_SAMPLE_WIDTH = 2              # 16-bit = 2 bytes
+OUTPUT_SAMPLE_WIDTH = 4              # 32-bit = 4 bytes (정식 프로그램 동일)
 FUSION_EXPECTED_FILE_SIZE = FUSION_SAMPLE_RATE * FUSION_SEGMENT_DURATION * FUSION_BID_BYTES_PER_SAMPLE  # 184,320,000 bytes
 FUSION_EXPECTED_SAMPLES = FUSION_SAMPLE_RATE * FUSION_SEGMENT_DURATION  # 46,080,000 samples
 

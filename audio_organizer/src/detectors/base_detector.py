@@ -21,6 +21,7 @@ class AudioSession:
     valid_count: int = 0                # 유효 파일 수
     warning_count: int = 0              # 경고 파일 수
     skip_count: int = 0                 # 스킵 파일 수
+    sample_rate: int = 25600            # 샘플레이트 (Hz)
 
     @property
     def status(self) -> str:

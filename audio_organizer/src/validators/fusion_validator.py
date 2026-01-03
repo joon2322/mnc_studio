@@ -25,17 +25,21 @@ class ValidationResult:
     file_size: Optional[int] = None
 
 
-def validate_fusion_audio_bid(file_path: Path) -> ValidationResult:
+def validate_fusion_audio_bid(
+    file_path: Path,
+    sample_rate: int = FUSION_SAMPLE_RATE
+) -> ValidationResult:
     """
     단일 Audio BID 파일 검증
 
     검증 항목:
     - 파일 존재 여부
-    - 파일 크기 (30분 = 46,080,000 bytes)
+    - 파일 크기 (30분 기준, 샘플레이트에 따라 다름)
     - 샘플 수 일치
 
     Args:
         file_path: BID 파일 경로
+        sample_rate: 샘플레이트 (Hz), 기본값 25600
 
     Returns:
         ValidationResult
@@ -48,8 +52,8 @@ def validate_fusion_audio_bid(file_path: Path) -> ValidationResult:
 
     file_size = file_path.stat().st_size
 
-    # 예상 크기: 30분 * 60초 * 25600 samples/sec * 4 bytes/sample
-    expected_samples = FUSION_SEGMENT_DURATION * FUSION_SAMPLE_RATE
+    # 예상 크기: 30분 * 60초 * sample_rate samples/sec * 4 bytes/sample
+    expected_samples = FUSION_SEGMENT_DURATION * sample_rate
     expected_size = expected_samples * FUSION_BID_BYTES_PER_SAMPLE
 
     actual_samples = file_size // FUSION_BID_BYTES_PER_SAMPLE
@@ -72,12 +76,16 @@ def validate_fusion_audio_bid(file_path: Path) -> ValidationResult:
     )
 
 
-def validate_fusion_audio_folder(folder_path: Path) -> List[ValidationResult]:
+def validate_fusion_audio_folder(
+    folder_path: Path,
+    sample_rate: int = FUSION_SAMPLE_RATE
+) -> List[ValidationResult]:
     """
     Audio 폴더 내 모든 BID 파일 검증
 
     Args:
         folder_path: Audio 폴더 경로
+        sample_rate: 샘플레이트 (Hz), 기본값 25600
 
     Returns:
         각 파일의 ValidationResult 리스트
@@ -99,7 +107,7 @@ def validate_fusion_audio_folder(folder_path: Path) -> List[ValidationResult]:
         )]
 
     for bid_file in bid_files:
-        result = validate_fusion_audio_bid(bid_file)
+        result = validate_fusion_audio_bid(bid_file, sample_rate)
         results.append(result)
 
     return results

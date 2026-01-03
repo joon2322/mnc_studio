@@ -12,6 +12,8 @@ from ..config import (
     BID_EXTENSION,
 )
 from ..utils.date_utils import parse_fusion_date, parse_fusion_session_duration, calculate_expected_bid_count
+from ..utils.audio_config import get_sampling_frequency
+from ..utils.point_utils import normalize_point_name
 from ..validators.fusion_validator import validate_fusion_audio_folder
 
 logger = logging.getLogger(__name__)
@@ -159,22 +161,12 @@ class FusionDetector(BaseDetector):
 
     def _normalize_point(self, raw: str) -> str:
         """
-        지점명 정규화
+        지점명 정규화 (공통 유틸리티 사용)
 
         N03 → N-3, N-03 → N-3, N3 → N-3
-        이동식01 → 이동식1, 이동식 N01 → 이동식1
+        이동식01 → 이동식-1, 이동식 N01 → 이동식-1
         """
-        # 이동식 패턴
-        mobile_match = re.match(r'^이동식\s*N?-?0*(\d+)', raw, re.IGNORECASE)
-        if mobile_match:
-            return f"이동식{mobile_match.group(1)}"
-
-        # N-숫자 패턴 (N03, N-03, N3, N-3 → N-숫자)
-        n_match = re.match(r'^N-?0*(\d+)', raw, re.IGNORECASE)
-        if n_match:
-            return f"N-{n_match.group(1)}"
-
-        return raw
+        return normalize_point_name(raw)
 
     def scan(self, folder_path: Path) -> List[AudioSession]:
         """
@@ -225,8 +217,14 @@ class FusionDetector(BaseDetector):
                 if duration_sec:
                     expected_count = calculate_expected_bid_count(duration_sec)
 
-                # 검증
-                valid_count, warning_count, skip_count = validate_fusion_audio_folder(audio_folder)
+                # 샘플레이트 감지 (검증 전에 읽어야 함)
+                sample_rate = get_sampling_frequency(session_folder)
+
+                # 검증 (샘플레이트 반영)
+                validation_results = validate_fusion_audio_folder(audio_folder, sample_rate)
+                valid_count = sum(1 for r in validation_results if r.is_valid)
+                warning_count = 0  # 현재 warning 구분 없음
+                skip_count = sum(1 for r in validation_results if not r.is_valid)
 
                 session = AudioSession(
                     point=point,
@@ -240,11 +238,13 @@ class FusionDetector(BaseDetector):
                     valid_count=valid_count,
                     warning_count=warning_count,
                     skip_count=skip_count,
+                    sample_rate=sample_rate,
                 )
                 sessions.append(session)
 
                 status = session.status
-                logger.info(f"Fusion 세션 감지: {point} {measurement_date} ({len(bid_files)}/{expected_count}개 파일) - {status}")
+                rate_khz = sample_rate / 1000
+                logger.info(f"Fusion 세션 감지: {point} {measurement_date} ({len(bid_files)}/{expected_count}개, {rate_khz}kHz) - {status}")
 
         except PermissionError as e:
             logger.error(f"폴더 접근 실패: {folder_path} - {e}")

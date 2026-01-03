@@ -11,13 +11,15 @@
 - [.claude/settings.json](.claude/settings.json) - 명령 허용/차단 규칙
 
 ## 핵심 규칙 (CLAUDE.md 요약)
-- BID → WAV 변환 로직의 `>> 8` 시프트는 변경하지 않는다.
-- 테이블 정렬 시 UserRole 인덱스 보존 로직은 변경하지 않는다.
+- BID → WAV 변환: 32-bit 피크 정규화 알고리즘 변경 금지
+  - `FULL_SCALE = 2,147,483,642` 고정
+  - 정수 나눗셈(`//`) 사용 필수
+  - 16-bit 변환(`>> 8`) 사용 금지 (클리핑 위험)
 - 파괴적 명령(`rm -rf` 등)을 사용하지 않는다.
 
 ## 운영 메모
 - 공용 가상환경 `venv/`를 사용하고 `scripts/run_*.sh`로 실행한다.
-- GUI 실행 시 DISPLAY 환경 변수가 필요할 수 있다 (README 참고).
+- Audio Organizer는 CLI 전용 (GUI 제거됨).
 
 ## 특이사항 / 추적
 - 2025-01-01: 데스크톱 바로가기 실행 문제. **해결됨**. 원인: GNOME의 XDG 데스크톱 경로가 `~/바탕화면`(한글)이었으나, 수정된 .desktop 파일은 `~/Desktop`(영어)에 있었음. `~/바탕화면`에 올바른 .desktop 파일 배치로 해결.

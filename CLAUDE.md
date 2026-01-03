@@ -55,12 +55,28 @@ MNC Studio는 군 소음측정 데이터 처리 도구 모음입니다.
 ### 1. BID → WAV 변환 (Audio Organizer)
 
 ```python
-# 32-bit → 16-bit 변환 (절대 클리핑 사용 금지!)
-raw_data = np.fromfile(bid_path, dtype='<i4')  # 32-bit signed
-audio_16bit = (raw_data >> 8).astype(np.int16)  # 오른쪽 시프트
+# 32-bit 피크 정규화 (정식 Fusion 프로그램과 100% 동일)
+FULL_SCALE = 2_147_483_642  # INT32_MAX - 5
+
+raw = np.fromfile(bid_path, dtype='<i4')
+raw_64 = raw.astype(np.int64)
+max_abs = int(np.max(np.abs(raw_64)))
+
+# 정수 나눗셈 (truncation) - 부동소수점 사용 금지!
+num = raw_64 * FULL_SCALE
+scaled = (np.sign(num) * (np.abs(num) // max_abs)).astype(np.int32)
+
+wav_file.setsampwidth(4)  # 32-bit
+wav_file.writeframes(scaled.tobytes())
 ```
 
-**경고**: `np.clip()` 사용 시 54% 데이터 손실 발생!
+**핵심 규칙**:
+- `FULL_SCALE = 2,147,483,642` (INT32_MAX가 아님!)
+- 파일별 피크 정규화 (파일마다 max_abs 계산)
+- 정수 나눗셈(`//`) 사용 (부동소수점 곱셈 사용 시 LSB 오차 발생)
+- 검증: 미여도, 낙동, 수원 데이터에서 100% 샘플 일치 확인
+
+**금지**: 16-bit 변환(`>> 8`) 사용 금지 - 일부 데이터에서 89% 클리핑 발생!
 
 ### 2. 지점 vs 장비 시리얼 구분
 
@@ -171,7 +187,10 @@ ls ~/Desktop/*.desktop   # 영어
 ### 코드 수정 시 주의
 
 1. **기존 파일 우선 편집** - 새 파일 생성 최소화
-2. **BID 변환 로직 변경 금지** - `>> 8` 시프트 유지
+2. **BID → WAV 피크 정규화 알고리즘 변경 금지**
+   - FULL_SCALE = 2,147,483,642 고정
+   - 정수 나눗셈(`//`) 사용 필수
+   - 16-bit 다운샘플 금지 (클리핑 위험)
 3. **테이블 정렬 로직 변경 금지** - UserRole 인덱스 유지
 
 ---
@@ -183,7 +202,8 @@ ls ~/Desktop/*.desktop   # 영어
 | 2025-12-31 | v1.0.0 | Audio Organizer, Copier 완성 |
 | 2025-12-31 | v3.0.0 | Converter 기본 구조 완성 |
 | 2026-01-01 | - | 개발 플로우 지침 추가 (검토자 협업 필수화) |
+| 2026-01-03 | v1.1.0 | 32-bit 피크 정규화 구현 (정식 프로그램 100% 일치) |
 
 ---
 
-**최종 업데이트**: 2026-01-01
+**최종 업데이트**: 2026-01-03
