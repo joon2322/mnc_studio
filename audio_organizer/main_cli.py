@@ -37,7 +37,6 @@ from src.detectors.rion_detector import RionDetector
 from src.processors.fusion_processor import FusionProcessor
 from src.processors.rion_processor import RionProcessor
 from src.utils.session_utils import create_session_folder
-from src.utils.manifest import create_manifest
 from src.utils.point_utils import normalize_point_name, point_sort_key
 
 
@@ -88,18 +87,6 @@ def process_point_sessions(args_tuple):
             )
 
             if result.success:
-                # Manifest 생성
-                create_manifest(
-                    session_path=session_output,
-                    source_path=session.source_path,
-                    equipment_type="fusion",
-                    measurement_date=session.measurement_date.strftime("%Y-%m-%d"),
-                    extra_info={
-                        "sample_rate": session.sample_rate,
-                        "location": location,
-                        "point": session.point,
-                    }
-                )
                 results.append({
                     'session': session,
                     'status': 'ok',
@@ -454,26 +441,6 @@ def process_main_system_session(args_tuple):
             files_count = result.files_processed
             device_model = None
 
-        # Manifest 생성 (성공 시)
-        if result.success:
-            from src.utils.manifest import create_manifest
-            extra_info = {
-                "location": location,
-                "point": session.point,
-            }
-            if equipment_type == 'rion':
-                extra_info["device_model"] = device_model
-            else:
-                extra_info["sample_rate"] = session.sample_rate
-
-            create_manifest(
-                session_path=target_dir,
-                source_path=source_dir,
-                equipment_type=equipment_type,
-                measurement_date=session.measurement_date.strftime("%Y-%m-%d"),
-                extra_info=extra_info
-            )
-
         return {
             'point': session.point,
             'date': session.measurement_date.strftime("%Y-%m-%d"),
@@ -547,8 +514,8 @@ def cmd_extract_to_main(args):
     # 위치명 추출 (출력 폴더명에서)
     location = output_path.name
 
-    # 추출 계획 파일 생성
-    plan_file = output_path / f"extraction_plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    # 추출 계획 파일 생성 (최신 1개만 유지)
+    plan_file = output_path / "extraction_plan.txt"
 
     # 주말 제외가 기본값 (--include-weekend로 포함 가능)
     exclude_weekend = not getattr(args, 'include_weekend', False)
@@ -600,6 +567,10 @@ def cmd_extract_to_main(args):
     success_count = 0
     fail_count = 0
 
+    # 추출 결과 수집
+    extraction_results = []
+    start_time = datetime.now()
+
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = {executor.submit(process_main_system_session, task): task for task in valid_tasks}
 
@@ -616,6 +587,10 @@ def cmd_extract_to_main(args):
                 status = colorize(f"FAIL: {r['message']}", Colors.RED)
 
             print(f"[{completed}/{len(valid_tasks)}] {r['point']} {r['date']}({r['weekday']}) -> {status}")
+            extraction_results.append(r)
+
+    end_time = datetime.now()
+    elapsed = end_time - start_time
 
     print("-" * 60)
     print()
@@ -623,18 +598,36 @@ def cmd_extract_to_main(args):
     print(f"  성공: {colorize(str(success_count), Colors.GREEN)}")
     if fail_count:
         print(f"  실패: {colorize(str(fail_count), Colors.RED)}")
+    print(f"  소요: {elapsed.total_seconds():.1f}초")
     print("=" * 60)
 
-    # 결과를 계획 파일에 추가
-    with open(plan_file, 'a', encoding='utf-8') as f:
-        f.write("\n")
+    # 로그 파일 생성 (최신 1개만 유지)
+    log_file = output_path / "extraction_log.txt"
+    with open(log_file, 'w', encoding='utf-8') as f:
         f.write("=" * 80 + "\n")
-        f.write("추출 결과\n")
+        f.write("MNC Audio Organizer - 추출 로그\n")
         f.write("=" * 80 + "\n")
-        f.write(f"완료 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"시작: {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"완료: {end_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"소요: {elapsed.total_seconds():.1f}초\n")
         f.write(f"성공: {success_count}개\n")
         f.write(f"실패: {fail_count}개\n")
-        f.write("=" * 80 + "\n")
+        f.write("\n")
+
+        # 세션별 결과
+        f.write("-" * 80 + "\n")
+        f.write("세션별 결과\n")
+        f.write("-" * 80 + "\n")
+
+        # 지점+날짜 순 정렬
+        sorted_results = sorted(extraction_results, key=lambda x: (point_sort_key(x['point']), x['date']))
+
+        for r in sorted_results:
+            status = "OK" if r['success'] else "FAIL"
+            files_info = f"{r['files']} files" if r['success'] else r['message']
+            f.write(f"{r['point']:<10} {r['date']} ({r['weekday']}) [{r['equipment']}] -> {status} ({files_info})\n")
+
+        f.write("-" * 80 + "\n")
 
     return 0 if fail_count == 0 else 1
 
@@ -878,19 +871,6 @@ def cmd_extract(args):
                 )
 
                 if result.success:
-                    # Manifest 생성
-                    create_manifest(
-                        session_path=session_output,
-                        source_path=session.source_path,
-                        equipment_type="fusion",
-                        measurement_date=session.measurement_date.strftime("%Y-%m-%d"),
-                        extra_info={
-                            "sample_rate": session.sample_rate,
-                            "location": location,
-                            "point": session.point,
-                        }
-                    )
-
                     print(colorize(f"→ OK ({result.files_processed} files)", Colors.GREEN))
                     success_count += 1
                 else:

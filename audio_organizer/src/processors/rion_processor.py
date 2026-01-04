@@ -5,7 +5,6 @@ Rion WAV 파일은 이미 표준 형식이므로 변환 없이 복사만 수행
 """
 
 import shutil
-import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -94,32 +93,10 @@ class RionProcessor(BaseProcessor):
         """
         출력 파일명 생성 (BaseProcessor 추상 메서드 구현)
 
-        입력: NL_001_20250819_095300_120dB_0034_0000_ST0001.wav
-        출력: 095300_095400.wav (시작시간_종료시간)
-
-        Fusion과 동일한 형식으로 정규화
+        Rion은 원본 파일명 그대로 복사
+        예: NL_001_20250819_095300_120dB_0034_0000_ST0001.wav → 동일
         """
-        filename = input_file.name
-
-        # 시간 추출: NL_001_20250819_HHMMSS_...
-        match = re.search(r'_\d{8}_(\d{6})_', filename)
-        if match:
-            start_time = match.group(1)
-            # 1분 단위로 가정 (Rion은 보통 1분 녹음)
-            # HHMMSS → HH:MM:SS + 1분
-            h, m, s = int(start_time[:2]), int(start_time[2:4]), int(start_time[4:6])
-            end_m = m + 1
-            end_h = h
-            if end_m >= 60:
-                end_m = 0
-                end_h += 1
-            if end_h >= 24:
-                end_h = 0
-            end_time = f"{end_h:02d}{end_m:02d}{s:02d}"
-            return f"{start_time}_{end_time}.wav"
-
-        # 파싱 실패 시 원본 파일명 사용
-        return filename
+        return input_file.name
 
     def process(
         self,
